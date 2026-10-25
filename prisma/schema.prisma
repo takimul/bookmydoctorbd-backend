@@ -1,0 +1,465 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  GUEST
+  PATIENT
+  DOCTOR
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum DoctorVerificationStatus {
+  DRAFT
+  PENDING
+  VERIFIED
+  SUSPENDED
+  EXPIRED
+}
+
+enum AppointmentStatus {
+  REQUESTED
+  CONFIRMED
+  CHECKED_IN
+  CONSULTATION_STARTED
+  COMPLETED
+  CANCELLED
+  REJECTED
+  NO_SHOW
+}
+
+enum CaseStatus {
+  OPEN
+  RESOLVED
+  CLOSED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  TRIAL
+  CANCELLED
+}
+
+model User {
+  id              String         @id @default(uuid())
+  email           String?        @unique
+  phone           String         @unique
+  passwordHash    String?
+  name            String
+  role            Role           @default(PATIENT)
+  isActive        Boolean        @default(true)
+  isPhoneVerified Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  doctorProfile   DoctorProfile?
+  patientProfile  PatientProfile?
+  adminProfile    AdminProfile?
+
+  appointmentsAsPatient Appointment[]  @relation("PatientUserAppointments")
+  medicalCases          MedicalCase[]  @relation("PatientUserMedicalCases")
+  reviews               DoctorReview[]
+  notifications         Notification[]
+  recommendations       HealthRecommendation[]
+}
+
+model AdminProfile {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department  String?
+  permissions String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model DoctorProfile {
+  id                    String                   @id @default(uuid())
+  userId                String                   @unique
+  user                  User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bmdcRegNumber         String                   @unique
+  gender                String?
+  specialties           String[]
+  isVeterinary          Boolean                  @default(false)
+  degrees               String[]
+  experienceYears       Int                      @default(0)
+  aboutBio              String?
+  profilePhotoUrl       String?
+  languages             String[]                 @default(["Bangla", "English"])
+  verificationStatus    DoctorVerificationStatus @default(PENDING)
+  verifiedAt            DateTime?
+  profileScore          Int                      @default(20)
+  rating                Float                    @default(5.0)
+  totalReviews          Int                      @default(0)
+  baseConsultationFee   Float                    @default(500)
+  followUpFee           Float                    @default(300)
+  digitalFollowUpFee    Float                    @default(200)
+  isSponsored           Boolean                  @default(false)
+  sponsoredExpiresAt    DateTime?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+
+  subscription          DoctorSubscription?
+  chambers              Chamber[]
+  leaves                DoctorLeave[]
+  appointments          Appointment[]
+  medicalCases          MedicalCase[]
+  medicinePreferences   DoctorMedicinePreference[]
+  reviews               DoctorReview[]
+  favorites             DoctorFavorite[]
+}
+
+model PatientProfile {
+  id                           String            @id @default(uuid())
+  userId                       String            @unique
+  user                         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dateOfBirth                  DateTime?
+  gender                       String?
+  bloodGroup                   String?
+  allergies                    String[]          @default([])
+  chronicConditions            String[]          @default([])
+  emergencyContact             String?
+  address                      String?
+  consentHealthRecommendations Boolean           @default(true)
+  createdAt                    DateTime          @default(now())
+  updatedAt                    DateTime          @updatedAt
+
+  familyMembers                FamilyMember[]
+  pets                         PetProfile[]
+  favorites                    DoctorFavorite[]
+}
+
+model FamilyMember {
+  id               String         @id @default(uuid())
+  patientProfileId String
+  patient          PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  name             String
+  relationship     String
+  dateOfBirth      DateTime?
+  gender           String?
+  bloodGroup       String?
+  allergies        String[]       @default([])
+  notes            String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  appointments     Appointment[]
+  medicalCases     MedicalCase[]
+}
+
+model PetProfile {
+  id               String           @id @default(uuid())
+  patientProfileId String
+  patient          PatientProfile   @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  name             String
+  species          String           @default("Cat")
+  breed            String?
+  gender           String?
+  dateOfBirth      DateTime?
+  weightKg         Float?
+  microchipNumber  String?
+  isNeutered       Boolean          @default(false)
+  notes            String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  vaccinations     PetVaccination[]
+  appointments     Appointment[]
+  medicalCases     MedicalCase[]
+}
+
+model PetVaccination {
+  id               String     @id @default(uuid())
+  petProfileId     String
+  pet              PetProfile @relation(fields: [petProfileId], references: [id], onDelete: Cascade)
+  vaccineName      String
+  administeredDate DateTime
+  dueDate          DateTime
+  administeredBy   String?
+  isCompleted      Boolean    @default(false)
+  notes            String?
+  createdAt        DateTime   @default(now())
+}
+
+model Chamber {
+  id              String            @id @default(uuid())
+  doctorId        String
+  doctor          DoctorProfile     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  name            String
+  division        String
+  district        String
+  upazilaThana    String
+  address         String
+  contactPhone    String?
+  consultationFee Float
+  followUpFee     Float
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  schedules       ChamberSchedule[]
+  appointments    Appointment[]
+}
+
+model ChamberSchedule {
+  id                  String   @id @default(uuid())
+  chamberId           String
+  chamber             Chamber  @relation(fields: [chamberId], references: [id], onDelete: Cascade)
+  dayOfWeek           Int      // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+  startTime           String   // e.g. "17:00"
+  endTime             String   // e.g. "21:00"
+  slotDurationMinutes Int      @default(15)
+  maxPatientsPerShift Int      @default(20)
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+}
+
+model DoctorLeave {
+  id        String        @id @default(uuid())
+  doctorId  String
+  doctor    DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  startDate DateTime
+  endDate   DateTime
+  reason    String?
+  createdAt DateTime      @default(now())
+}
+
+model SubscriptionPlan {
+  id                  String               @id @default(uuid())
+  code                String               @unique // BASIC, PRO, PREMIUM, TRIAL
+  name                String
+  priceBDT            Float
+  billingCycleDays    Int                  @default(30)
+  maxChambers         Int                  @default(1)
+  isSponsoredEligible Boolean              @default(false)
+  features            String[]             @default([])
+  createdAt           DateTime             @default(now())
+
+  doctorSubscriptions DoctorSubscription[]
+}
+
+model DoctorSubscription {
+  id                   String             @id @default(uuid())
+  doctorId             String             @unique
+  doctor               DoctorProfile      @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  planId               String
+  plan                 SubscriptionPlan   @relation(fields: [planId], references: [id])
+  status               SubscriptionStatus @default(ACTIVE)
+  startDate            DateTime           @default(now())
+  endDate              DateTime
+  assignedBySuperAdmin Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+}
+
+model Appointment {
+  id                 String            @id @default(uuid())
+  appointmentNumber  String            @unique
+  doctorId           String
+  doctor             DoctorProfile     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  chamberId          String
+  chamber            Chamber           @relation(fields: [chamberId], references: [id], onDelete: Cascade)
+  patientUserId      String?
+  patientUser        User?             @relation("PatientUserAppointments", fields: [patientUserId], references: [id], onDelete: SetNull)
+  familyMemberId     String?
+  familyMember       FamilyMember?     @relation(fields: [familyMemberId], references: [id], onDelete: SetNull)
+  petProfileId       String?
+  petProfile         PetProfile?       @relation(fields: [petProfileId], references: [id], onDelete: SetNull)
+  patientName        String
+  patientPhone       String
+  patientEmail       String?
+  appointmentDate    DateTime
+  timeSlot           String
+  serialNumber       Int
+  status             AppointmentStatus @default(REQUESTED)
+  problemDescription String?
+  isGuestBooking     Boolean           @default(false)
+  otpVerified        Boolean           @default(true)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  medicalCase        MedicalCase?
+}
+
+model MedicalCase {
+  id                  String                 @id @default(uuid())
+  caseNumber          String                 @unique
+  appointmentId       String                 @unique
+  appointment         Appointment            @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  doctorId            String
+  doctor              DoctorProfile          @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  patientUserId       String?
+  patientUser         User?                  @relation("PatientUserMedicalCases", fields: [patientUserId], references: [id], onDelete: SetNull)
+  familyMemberId      String?
+  familyMember        FamilyMember?          @relation(fields: [familyMemberId], references: [id], onDelete: SetNull)
+  petProfileId        String?
+  petProfile          PetProfile?            @relation(fields: [petProfileId], references: [id], onDelete: SetNull)
+  title               String
+  diagnosis           String?
+  clinicalNotes       String?
+  status              CaseStatus             @default(OPEN)
+  requireFollowUp     Boolean                @default(false)
+  followUpDueDate     DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  prescriptions       Prescription[]
+  investigationOrders InvestigationOrder[]
+  patientReports      PatientReport[]
+  digitalFollowUps    DigitalFollowUp[]
+  timeline            MedicalCaseTimeline[]
+}
+
+model Prescription {
+  id            String             @id @default(uuid())
+  medicalCaseId String
+  medicalCase   MedicalCase        @relation(fields: [medicalCaseId], references: [id], onDelete: Cascade)
+  doctorId      String
+  vitals        Json?              // { bp: "120/80", pulse: "76", weight: "68kg", temp: "98.6F", spo2: "99%" }
+  advice        String?
+  dietaryAdvice String?
+  nextVisitDate DateTime?
+  issuedAt      DateTime           @default(now())
+
+  items         PrescriptionItem[]
+}
+
+model PrescriptionItem {
+  id                 String       @id @default(uuid())
+  prescriptionId     String
+  prescription       Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  brandName          String       // e.g. "Napa Extra"
+  genericName        String       // e.g. "Paracetamol + Caffeine"
+  dosageForm         String       // Tablet, Syrup, Capsule, etc.
+  strength           String       // 500mg, 20mg
+  dosageInstruction  String       // 1+0+1, 1+1+1
+  timing             String       // After meal, Before meal
+  durationDays       Int          // 7
+  specialInstructions String?
+}
+
+model InvestigationOrder {
+  id            String          @id @default(uuid())
+  medicalCaseId String
+  medicalCase   MedicalCase     @relation(fields: [medicalCaseId], references: [id], onDelete: Cascade)
+  testName      String          // e.g. "CBC", "Chest X-Ray", "Serum Creatinine"
+  instructions  String?
+  urgency       String          @default("NORMAL") // NORMAL, URGENT
+  createdAt     DateTime        @default(now())
+
+  reports       PatientReport[]
+}
+
+model PatientReport {
+  id                   String              @id @default(uuid())
+  medicalCaseId        String
+  medicalCase          MedicalCase         @relation(fields: [medicalCaseId], references: [id], onDelete: Cascade)
+  investigationOrderId String?
+  investigationOrder   InvestigationOrder? @relation(fields: [investigationOrderId], references: [id], onDelete: SetNull)
+  testName             String
+  fileUrl              String
+  fileType             String              @default("image/jpeg")
+  hospitalClinicName   String?
+  reportDate           DateTime?
+  aiSummary            String?
+  uploadedAt           DateTime            @default(now())
+}
+
+model DigitalFollowUp {
+  id            String      @id @default(uuid())
+  medicalCaseId String
+  medicalCase   MedicalCase @relation(fields: [medicalCaseId], references: [id], onDelete: Cascade)
+  patientQuery  String
+  doctorAdvice  String?
+  status        String      @default("PENDING_PAYMENT") // PENDING_PAYMENT, PAID, REVIEWED, COMPLETED
+  paymentAmount Float       @default(200)
+  paymentStatus String      @default("PENDING") // PENDING, COMPLETED, FAILED
+  paymentTxnId  String?
+  reviewedAt    DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model MedicalCaseTimeline {
+  id            String      @id @default(uuid())
+  medicalCaseId String
+  medicalCase   MedicalCase @relation(fields: [medicalCaseId], references: [id], onDelete: Cascade)
+  eventType     String      // CONSULTATION_COMPLETED, PRESCRIPTION_ISSUED, TESTS_ORDERED, REPORT_UPLOADED, DIGITAL_FOLLOWUP_REQUESTED, DOCTOR_ADVICE_GIVEN
+  title         String
+  description   String?
+  metadata      Json?
+  createdAt     DateTime    @default(now())
+}
+
+model DoctorMedicinePreference {
+  id              String        @id @default(uuid())
+  doctorId        String
+  doctor          DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  brandName       String
+  genericName     String
+  dosageForm      String        @default("Tablet")
+  strength        String
+  defaultDose     String        @default("1+0+1")
+  defaultTiming   String        @default("After meal")
+  defaultDuration Int           @default(7)
+  frequencyCount  Int           @default(1)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([doctorId, brandName])
+}
+
+model DoctorFavorite {
+  id               String         @id @default(uuid())
+  patientProfileId String
+  patient          PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  doctorId         String
+  doctor           DoctorProfile  @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  createdAt        DateTime       @default(now())
+
+  @@unique([patientProfileId, doctorId])
+}
+
+model DoctorReview {
+  id                     String        @id @default(uuid())
+  doctorId               String
+  doctor                 DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  patientUserId          String
+  patientUser            User          @relation(fields: [patientUserId], references: [id], onDelete: Cascade)
+  rating                 Int           // 1 to 5
+  comment                String?
+  isVerifiedConsultation Boolean       @default(true)
+  createdAt              DateTime      @default(now())
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      String   @default("IN_APP") // SMS, EMAIL, PUSH, IN_APP
+  isRead    Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+}
+
+model HealthRecommendation {
+  id                 String   @id @default(uuid())
+  patientUserId      String
+  patientUser        User     @relation(fields: [patientUserId], references: [id], onDelete: Cascade)
+  recommendationType String   // ROUTINE_CHECKUP, VACCINATION, DIABETIC_FOLLOWUP, PET_DEWORMING
+  title              String
+  message            String
+  suggestedSpecialty String?
+  suggestedDoctorId  String?
+  isDismissed        Boolean  @default(false)
+  createdAt          DateTime @default(now())
+}
+
