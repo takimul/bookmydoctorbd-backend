@@ -34,8 +34,8 @@ if (process.env.NODE_ENV !== 'test') {
   app.use(morgan('dev'));
 }
 
-// Health check endpoint
-app.get('/api/health', (_req: Request, res: Response) => {
+// Root & Health check endpoints
+app.get(['/', '/health', '/api/health'], (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     service: 'BookMyDoctorBD Backend API',
