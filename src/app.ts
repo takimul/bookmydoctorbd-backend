@@ -2,6 +2,7 @@ import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import path from 'path';
 import { errorHandler } from './middlewares/error.middleware';
 
 // Module Routes
@@ -13,6 +14,7 @@ import adminRoutes from './modules/admin/admin.routes';
 import aiRoutes from './modules/ai/ai.routes';
 import patientRoutes from './modules/patient/patient.routes';
 import subscriptionRoutes from './modules/subscriptions/subscriptions.routes';
+import medicinesRoutes from './modules/medicines/medicines.routes';
 
 const app: Application = express();
 
@@ -20,15 +22,19 @@ const app: Application = express();
 app.use(helmet());
 app.use(
   cors({
-    origin: (origin, callback) => {
+    origin: (_origin, callback) => {
       // Allow localhost or frontend deployed domains
       callback(null, true);
     },
     credentials: true,
   })
 );
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+// Static files for uploaded images, photos and reports
+app.use('/uploads', express.static(path.join(process.cwd(), 'public', 'uploads')));
+app.use(express.static(path.join(process.cwd(), 'public')));
 
 if (process.env.NODE_ENV !== 'test') {
   app.use(morgan('dev'));
@@ -40,7 +46,7 @@ app.get(['/', '/health', '/api/health'], (_req: Request, res: Response) => {
     status: 'ok',
     service: 'BookMyDoctorBD Backend API',
     timestamp: new Date().toISOString(),
-    version: '1.0.0',
+    version: '1.2.0',
     database: 'NeonDB PostgreSQL (Prisma 7)',
   });
 });
@@ -50,6 +56,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/doctors', doctorRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/medical-cases', medicalCaseRoutes);
+app.use('/api/medicines', medicinesRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/patient', patientRoutes);
@@ -59,4 +66,3 @@ app.use('/api/subscriptions', subscriptionRoutes);
 app.use(errorHandler);
 
 export default app;
-

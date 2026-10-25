@@ -58,6 +58,42 @@ export const bookAppointment = async (req: Request, res: Response): Promise<void
       return;
     }
 
+    
+    // Check doctor slot capacity limit if timeSlot is provided
+    const dayOfWeek = apptDate.getDay();
+    const schedules = await prisma.chamberSchedule.findMany({
+      where: {
+        chamberId,
+        dayOfWeek,
+        isActive: true,
+      },
+    });
+
+    if (timeSlot && schedules.length > 0) {
+      const matchingSchedule = schedules.find(
+        (s) => (s.slotTitle && s.slotTitle.includes(timeSlot)) || timeSlot.includes(s.startTime) || `${s.startTime} - ${s.endTime}` === timeSlot
+      ) || schedules[0];
+
+      if (matchingSchedule) {
+        const slotBookedCount = await prisma.appointment.count({
+          where: {
+            chamberId,
+            appointmentDate: { gte: dayStart, lte: dayEnd },
+            timeSlot,
+            status: { notIn: [AppointmentStatus.CANCELLED, AppointmentStatus.REJECTED] },
+          },
+        });
+
+        if (slotBookedCount >= matchingSchedule.maxPatientsPerShift) {
+          res.status(400).json({
+            success: false,
+            message: `Selected slot (${timeSlot}) has reached its limit of ${matchingSchedule.maxPatientsPerShift} patients. Please choose another slot.`,
+          });
+          return;
+        }
+      }
+    }
+
     // Count existing bookings for this chamber & date to assign next serial number
     const existingCount = await prisma.appointment.count({
       where: {
@@ -316,6 +352,103 @@ export const updateAppointmentStatus = async (req: Request, res: Response): Prom
       message: `Appointment marked as ${status}.${createdCase ? ' Medical Case created.' : ''}`,
       appointment: updatedAppointment,
       medicalCase: createdCase || appointment.medicalCase,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const bookAppointmentByDoctor = async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ success: false, message: 'Unauthorized' });
+      return;
+    }
+
+    const doctor = await prisma.doctorProfile.findUnique({
+      where: { userId: req.user.id },
+    });
+
+    if (!doctor) {
+      res.status(404).json({ success: false, message: 'Doctor profile not found.' });
+      return;
+    }
+
+    const {
+      chamberId,
+      appointmentDate,
+      timeSlot,
+      patientName,
+      patientPhone,
+      patientEmail,
+      problemDescription,
+      age,
+      gender,
+    } = req.body;
+
+    if (!chamberId || !appointmentDate || !patientName || !patientPhone) {
+      res.status(400).json({
+        success: false,
+        message: 'Chamber, appointment date, patient name, and mobile number are required.',
+      });
+      return;
+    }
+
+    const apptDate = new Date(appointmentDate);
+    const dayStart = new Date(apptDate.getFullYear(), apptDate.getMonth(), apptDate.getDate(), 0, 0, 0);
+    const dayEnd = new Date(apptDate.getFullYear(), apptDate.getMonth(), apptDate.getDate(), 23, 59, 59);
+
+    // Look for existing registered user by phone
+    const cleanPhone = patientPhone.replace(/\s+/g, '');
+    let existingUser = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { phone: cleanPhone },
+          { phone: cleanPhone.replace('+88', '') },
+          { phone: `+88${cleanPhone.replace('+88', '')}` },
+        ],
+      },
+    });
+
+    const existingCount = await prisma.appointment.count({
+      where: {
+        doctorId: doctor.id,
+        chamberId,
+        appointmentDate: { gte: dayStart, lte: dayEnd },
+        status: { notIn: [AppointmentStatus.CANCELLED, AppointmentStatus.REJECTED] },
+      },
+    });
+
+    const serialNumber = existingCount + 1;
+    const dateStr = apptDate.toISOString().slice(0, 10).replace(/-/g, '');
+    const appointmentNumber = `BMD-${dateStr}-${Math.floor(100 + Math.random() * 900)}-#${serialNumber}`;
+
+    const appointment = await prisma.appointment.create({
+      data: {
+        appointmentNumber,
+        doctorId: doctor.id,
+        chamberId,
+        patientUserId: existingUser?.id || null,
+        patientName,
+        patientPhone: cleanPhone,
+        patientEmail: patientEmail || null,
+        appointmentDate: apptDate,
+        timeSlot: timeSlot || `Serial #${serialNumber}`,
+        serialNumber,
+        status: AppointmentStatus.CONFIRMED,
+        problemDescription: problemDescription || (age && gender ? `Age: ${age}, Gender: ${gender}` : null),
+        isGuestBooking: !existingUser,
+        otpVerified: true,
+      },
+      include: {
+        chamber: true,
+      },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Appointment #${serialNumber} confirmed for ${patientName}.`,
+      appointment,
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });

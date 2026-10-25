@@ -1,3 +1,5 @@
+import path from 'path';
+import fs from 'fs';
 import { Request, Response } from 'express';
 import prisma from '../../config/database';
 import { DoctorVerificationStatus, Role } from '@prisma/client';
@@ -284,6 +286,40 @@ export const getLocationsList = async (_req: Request, res: Response): Promise<vo
   }
 };
 
+
+export const getDoctorMe = async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ success: false, message: 'Unauthorized' });
+      return;
+    }
+
+    const doctor = await prisma.doctorProfile.findUnique({
+      where: { userId: req.user.id },
+      include: {
+        user: { select: { id: true, name: true, phone: true, email: true, isPhoneVerified: true } },
+        chambers: {
+          include: {
+            schedules: { orderBy: { dayOfWeek: 'asc' } },
+          },
+        },
+        subscription: { include: { plan: true } },
+        leaves: { orderBy: { startDate: 'desc' } },
+        medicinePreferences: { orderBy: { frequencyCount: 'desc' }, take: 25 },
+      },
+    });
+
+    if (!doctor) {
+      res.status(404).json({ success: false, message: 'Doctor profile not found.' });
+      return;
+    }
+
+    res.json({ success: true, doctor });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const updateDoctorProfile = async (req: Request, res: Response): Promise<void> => {
   try {
     if (!req.user) {
@@ -292,6 +328,10 @@ export const updateDoctorProfile = async (req: Request, res: Response): Promise<
     }
 
     const {
+      name,
+      phone,
+      email,
+      bmdcRegNumber,
       gender,
       specialties,
       degrees,
@@ -302,7 +342,20 @@ export const updateDoctorProfile = async (req: Request, res: Response): Promise<
       followUpFee,
       digitalFollowUpFee,
       profilePhotoUrl,
+      gallery,
     } = req.body;
+
+    // Update User table if name, phone or email changed
+    if (name || phone || email) {
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: {
+          ...(name && { name }),
+          ...(phone && { phone }),
+          ...(email && { email }),
+        },
+      });
+    }
 
     const doctorProfile = await prisma.doctorProfile.findUnique({
       where: { userId: req.user.id },
@@ -334,6 +387,8 @@ export const updateDoctorProfile = async (req: Request, res: Response): Promise<
         ...(followUpFee !== undefined && { followUpFee: parseFloat(followUpFee) }),
         ...(digitalFollowUpFee !== undefined && { digitalFollowUpFee: parseFloat(digitalFollowUpFee) }),
         ...(profilePhotoUrl !== undefined && { profilePhotoUrl }),
+        ...(bmdcRegNumber && { bmdcRegNumber }),
+        ...(gallery !== undefined && { gallery }),
         profileScore: Math.min(score, 100),
       },
     });
@@ -400,11 +455,12 @@ export const addOrUpdateChamber = async (req: Request, res: Response): Promise<v
           await prisma.chamberSchedule.create({
             data: {
               chamberId: id,
-              dayOfWeek: s.dayOfWeek,
+              dayOfWeek: typeof s.dayOfWeek === 'string' ? parseInt(s.dayOfWeek, 10) : (s.dayOfWeek ?? 0),
               startTime: s.startTime,
               endTime: s.endTime,
-              slotDurationMinutes: s.slotDurationMinutes || 15,
-              maxPatientsPerShift: s.maxPatientsPerShift || 20,
+              slotTitle: s.slotTitle || null,
+              slotDurationMinutes: parseInt(s.slotDurationMinutes || '15', 10),
+              maxPatientsPerShift: parseInt(s.maxPatientsPerShift || '10', 10),
             },
           });
         }
@@ -426,11 +482,12 @@ export const addOrUpdateChamber = async (req: Request, res: Response): Promise<v
           followUpFee: parseFloat(followUpFee || doctor.followUpFee),
           schedules: {
             create: (schedules || []).map((s: any) => ({
-              dayOfWeek: s.dayOfWeek,
+              dayOfWeek: typeof s.dayOfWeek === 'string' ? parseInt(s.dayOfWeek, 10) : (s.dayOfWeek ?? 0),
               startTime: s.startTime,
               endTime: s.endTime,
-              slotDurationMinutes: s.slotDurationMinutes || 15,
-              maxPatientsPerShift: s.maxPatientsPerShift || 20,
+              slotTitle: s.slotTitle || null,
+              slotDurationMinutes: parseInt(s.slotDurationMinutes || '15', 10),
+              maxPatientsPerShift: parseInt(s.maxPatientsPerShift || '10', 10),
             })),
           },
         },
@@ -471,6 +528,86 @@ export const addDoctorLeave = async (req: Request, res: Response): Promise<void>
     });
 
     res.status(201).json({ success: true, message: 'Leave schedule recorded.', leave });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const deleteChamber = async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ success: false, message: 'Unauthorized' });
+      return;
+    }
+
+    const id = req.params.id as string;
+    const doctor = await prisma.doctorProfile.findUnique({ where: { userId: req.user.id } });
+    if (!doctor) {
+      res.status(404).json({ success: false, message: 'Doctor not found.' });
+      return;
+    }
+
+    await prisma.chamber.deleteMany({
+      where: { id, doctorId: doctor.id },
+    });
+
+    res.json({ success: true, message: 'Chamber deleted successfully.' });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const uploadDoctorMedia = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { imageBase64, title, category } = req.body;
+
+    if (!imageBase64) {
+      res.status(400).json({ success: false, message: 'Image base64 data is required.' });
+      return;
+    }
+
+    // Direct URL check
+    if (typeof imageBase64 === 'string' && (imageBase64.startsWith('http://') || imageBase64.startsWith('https://'))) {
+      res.json({
+        success: true,
+        url: imageBase64,
+        title: title || 'Doctor Media',
+        category: category || 'achievement',
+      });
+      return;
+    }
+
+    const matches = imageBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) {
+      res.status(400).json({ success: false, message: 'Invalid base64 image payload.' });
+      return;
+    }
+
+    const mime = matches[1];
+    let ext = 'jpg';
+    if (mime.includes('png')) ext = 'png';
+    else if (mime.includes('webp')) ext = 'webp';
+    else if (mime.includes('pdf')) ext = 'pdf';
+
+    const buffer = Buffer.from(matches[2], 'base64');
+    const fileName = `doc_${Date.now()}_${Math.floor(Math.random() * 1000)}.${ext}`;
+    const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    const filePath = path.join(uploadsDir, fileName);
+    fs.writeFileSync(filePath, buffer);
+
+    const fileUrl = `/uploads/${fileName}`;
+
+    res.json({
+      success: true,
+      url: fileUrl,
+      fileName,
+      title: title || '',
+      category: category || 'achievement',
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }

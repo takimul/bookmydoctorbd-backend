@@ -91,6 +91,7 @@ model DoctorProfile {
   experienceYears       Int                      @default(0)
   aboutBio              String?
   profilePhotoUrl       String?
+  gallery               Json?
   languages             String[]                 @default(["Bangla", "English"])
   verificationStatus    DoctorVerificationStatus @default(PENDING)
   verifiedAt            DateTime?
@@ -215,6 +216,7 @@ model ChamberSchedule {
   startTime           String   // e.g. "17:00"
   endTime             String   // e.g. "21:00"
   slotDurationMinutes Int      @default(15)
+  slotTitle           String?
   maxPatientsPerShift Int      @default(20)
   isActive            Boolean  @default(true)
   createdAt           DateTime @default(now())
@@ -321,6 +323,10 @@ model Prescription {
   medicalCaseId String
   medicalCase   MedicalCase        @relation(fields: [medicalCaseId], references: [id], onDelete: Cascade)
   doctorId      String
+  prescriptionNumber String?
+  chiefComplaints    String?
+  clinicalFindings   String?
+  diagnosis          String?
   vitals        Json?              // { bp: "120/80", pulse: "76", weight: "68kg", temp: "98.6F", spo2: "99%" }
   advice        String?
   dietaryAdvice String?
@@ -358,14 +364,18 @@ model InvestigationOrder {
 
 model PatientReport {
   id                   String              @id @default(uuid())
-  medicalCaseId        String
-  medicalCase          MedicalCase         @relation(fields: [medicalCaseId], references: [id], onDelete: Cascade)
+  medicalCaseId        String?
+  medicalCase          MedicalCase?        @relation(fields: [medicalCaseId], references: [id], onDelete: Cascade)
   investigationOrderId String?
   investigationOrder   InvestigationOrder? @relation(fields: [investigationOrderId], references: [id], onDelete: SetNull)
   testName             String
   fileUrl              String
   fileType             String              @default("image/jpeg")
   hospitalClinicName   String?
+  patientPhone         String?
+  patientName          String?
+  notes                String?
+  doctorId             String?
   reportDate           DateTime?
   aiSummary            String?
   uploadedAt           DateTime            @default(now())
@@ -408,6 +418,8 @@ model DoctorMedicinePreference {
   defaultDose     String        @default("1+0+1")
   defaultTiming   String        @default("After meal")
   defaultDuration Int           @default(7)
+  diagnosis       String?
+  manufacturer    String?
   frequencyCount  Int           @default(1)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -463,3 +475,19 @@ model HealthRecommendation {
   createdAt          DateTime @default(now())
 }
 
+
+model Medicine {
+  id           String   @id @default(uuid())
+  brandName    String   @unique
+  genericName  String
+  dosageForm   String   @default("Tablet")
+  strength     String
+  manufacturer String?
+  drugClass    String?
+  indication   String?
+  defaultDose  String?  @default("1+0+1")
+  defaultTiming String? @default("After meal")
+  defaultDuration Int?  @default(7)
+  isAllopathic Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
