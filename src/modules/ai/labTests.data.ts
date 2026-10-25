@@ -828,3 +828,4 @@ export const COMPREHENSIVE_LAB_TESTS: LabTestItem[] = [
     sampleCollectionNote: 'Fix immediately in 10x volume of 10% formalin.',
   },
 ];
+

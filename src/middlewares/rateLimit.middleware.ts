@@ -105,3 +105,4 @@ export const aiLimiter = createRateLimiter({
   keyPrefix: 'ai',
   message: 'AI diagnosis query limit reached. Please wait before submitting more queries.',
 });
+
