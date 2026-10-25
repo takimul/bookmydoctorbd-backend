@@ -27,3 +27,4 @@ npm run seed
 npm run dev
 ```
 API runs on `http://localhost:5000`. Health check: `GET /api/health`.
+
