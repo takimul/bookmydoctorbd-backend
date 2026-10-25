@@ -51,12 +51,22 @@ export const requestSanitizerMiddleware = (req: Request, res: Response, next: Ne
 
     // Sanitize body if present
     if (req.body && typeof req.body === 'object') {
-      req.body = sanitizeValue(req.body);
+      try {
+        req.body = sanitizeValue(req.body);
+      } catch {
+        // ignore
+      }
     }
 
-    // Sanitize query parameters
+    // In Express 5, req.query is a getter; mutate individual keys in-place
     if (req.query && typeof req.query === 'object') {
-      req.query = sanitizeValue(req.query);
+      try {
+        for (const k of Object.keys(req.query)) {
+          (req.query as any)[k] = sanitizeValue((req.query as any)[k]);
+        }
+      } catch {
+        // ignore
+      }
     }
 
     next();
