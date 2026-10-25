@@ -3,6 +3,7 @@ import fs from 'fs';
 import { Request, Response } from 'express';
 import prisma from '../../config/database';
 import { DoctorVerificationStatus, Role } from '@prisma/client';
+import { uploadMediaFile } from '../../config/cloudinary';
 
 // Common Bangladeshi symptom-to-specialty mapping for smart clinical search
 const SYMPTOM_SPECIALTY_MAP: Record<string, string[]> = {
@@ -577,34 +578,14 @@ export const uploadDoctorMedia = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    const matches = imageBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-    if (!matches || matches.length !== 3) {
-      res.status(400).json({ success: false, message: 'Invalid base64 image payload.' });
-      return;
-    }
-
-    const mime = matches[1];
-    let ext = 'jpg';
-    if (mime.includes('png')) ext = 'png';
-    else if (mime.includes('webp')) ext = 'webp';
-    else if (mime.includes('pdf')) ext = 'pdf';
-
-    const buffer = Buffer.from(matches[2], 'base64');
-    const fileName = `doc_${Date.now()}_${Math.floor(Math.random() * 1000)}.${ext}`;
-    const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    }
-
-    const filePath = path.join(uploadsDir, fileName);
-    fs.writeFileSync(filePath, buffer);
-
-    const fileUrl = `/uploads/${fileName}`;
+    const uploaded = await uploadMediaFile(imageBase64, {
+      folder: 'doctor_profiles',
+      filenamePrefix: 'doc',
+    });
 
     res.json({
       success: true,
-      url: fileUrl,
-      fileName,
+      url: uploaded.url,
       title: title || '',
       category: category || 'achievement',
     });

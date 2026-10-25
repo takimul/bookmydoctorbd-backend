@@ -454,3 +454,138 @@ export const bookAppointmentByDoctor = async (req: Request, res: Response): Prom
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// Get live slot availability with capacity counting for a chamber on a given date
+export const getChamberSlots = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const chamberId = req.params.chamberId as string;
+    const dateParam = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+
+    const chamber = await prisma.chamber.findUnique({
+      where: { id: chamberId },
+      include: {
+        doctor: {
+          include: {
+            user: { select: { name: true, phone: true } },
+            leaves: true,
+          },
+        },
+        schedules: {
+          where: { isActive: true },
+          orderBy: { startTime: 'asc' },
+        },
+      },
+    });
+
+    if (!chamber) {
+      res.status(404).json({ success: false, message: 'Chamber not found.' });
+      return;
+    }
+
+    const targetDate = new Date(dateParam);
+    if (isNaN(targetDate.getTime())) {
+      res.status(400).json({ success: false, message: 'Invalid date parameter. Use YYYY-MM-DD format.' });
+      return;
+    }
+
+    const dayStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0);
+    const dayEnd = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59);
+    const dayOfWeek = targetDate.getDay();
+
+    // Check if doctor is on leave on this date
+    const doctorLeave = chamber.doctor.leaves.find((l) => {
+      const lStart = new Date(l.startDate);
+      const lEnd = new Date(l.endDate);
+      return lStart <= dayEnd && lEnd >= dayStart;
+    });
+
+    // Match schedules for this day of week, or fallback to all active schedules
+    let matchingSchedules = chamber.schedules.filter((s) => s.dayOfWeek === dayOfWeek);
+    if (matchingSchedules.length === 0 && chamber.schedules.length > 0) {
+      matchingSchedules = chamber.schedules;
+    }
+
+    // Default slot if none set up yet
+    if (matchingSchedules.length === 0) {
+      matchingSchedules = [
+        {
+          id: `default_${chamber.id}`,
+          chamberId: chamber.id,
+          dayOfWeek,
+          startTime: '18:00',
+          endTime: '21:00',
+          slotDurationMinutes: 15,
+          slotTitle: 'General Chamber Slot (6:00 PM - 9:00 PM)',
+          maxPatientsPerShift: 15,
+          isActive: true,
+        } as any,
+      ];
+    }
+
+    // Fetch existing active bookings for this chamber & date
+    const bookedAppointments = await prisma.appointment.findMany({
+      where: {
+        chamberId,
+        appointmentDate: { gte: dayStart, lte: dayEnd },
+        status: { notIn: [AppointmentStatus.CANCELLED, AppointmentStatus.REJECTED] },
+      },
+      select: {
+        id: true,
+        timeSlot: true,
+        serialNumber: true,
+      },
+    });
+
+    // Compute live remaining capacity for each slot
+    const slots = matchingSchedules.map((sched) => {
+      const slotIdentifier = sched.slotTitle || `${sched.startTime} - ${sched.endTime}`;
+      const maxCapacity = sched.maxPatientsPerShift || 10;
+
+      const bookedCount = bookedAppointments.filter((appt) => {
+        if (!appt.timeSlot) return false;
+        return (
+          appt.timeSlot === slotIdentifier ||
+          appt.timeSlot.includes(sched.startTime) ||
+          (sched.slotTitle && appt.timeSlot === sched.slotTitle)
+        );
+      }).length;
+
+      const availableCount = doctorLeave ? 0 : Math.max(0, maxCapacity - bookedCount);
+      const isFull = doctorLeave ? true : bookedCount >= maxCapacity;
+
+      return {
+        id: sched.id,
+        chamberId: sched.chamberId,
+        dayOfWeek: sched.dayOfWeek,
+        startTime: sched.startTime,
+        endTime: sched.endTime,
+        slotTitle: slotIdentifier,
+        slotDurationMinutes: sched.slotDurationMinutes,
+        maxCapacity,
+        bookedCount,
+        availableCount,
+        isFull,
+      };
+    });
+
+    res.json({
+      success: true,
+      chamber: {
+        id: chamber.id,
+        name: chamber.name,
+        address: chamber.address,
+        consultationFee: chamber.consultationFee,
+        doctorName: chamber.doctor.user.name,
+      },
+      date: dateParam,
+      dayOfWeek,
+      isDoctorOnLeave: Boolean(doctorLeave),
+      leaveReason: doctorLeave?.reason || null,
+      totalSlots: slots.length,
+      availableSlotsCount: slots.filter((s) => !s.isFull).length,
+      slots,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

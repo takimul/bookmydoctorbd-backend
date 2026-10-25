@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../../config/database';
+import { COMPREHENSIVE_LAB_TESTS } from './labTests.data';
 
 // Comprehensive Bangladeshi Formulary Data for quick AI matching & doctor auto-complete
 const BANGLADESH_MEDICINE_CATALOG = [
@@ -486,6 +487,38 @@ export const quickDiagnose = async (req: Request, res: Response): Promise<void> 
         nextVisitDays,
         doctorCustomized: doctorPreferences.length > 0,
       },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// 5. Comprehensive Lab Test Autocomplete & Search Endpoint
+export const autocompleteLabTests = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const q = ((req.query.q || req.body?.q || req.body?.query || '') as string).toLowerCase().trim();
+    const category = ((req.query.category || req.body?.category || '') as string).toLowerCase().trim();
+
+    let matches = COMPREHENSIVE_LAB_TESTS;
+
+    if (category) {
+      matches = matches.filter((t) => t.category.toLowerCase().includes(category));
+    }
+
+    if (q) {
+      matches = matches.filter(
+        (t) =>
+          t.name.toLowerCase().includes(q) ||
+          t.department.toLowerCase().includes(q) ||
+          t.category.toLowerCase().includes(q) ||
+          t.commonIndications.some((ind) => ind.toLowerCase().includes(q))
+      );
+    }
+
+    res.json({
+      success: true,
+      total: matches.length,
+      tests: matches.slice(0, 30),
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });

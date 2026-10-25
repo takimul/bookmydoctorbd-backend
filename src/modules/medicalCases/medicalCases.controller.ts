@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import prisma from '../../config/database';
 import { CaseStatus } from '@prisma/client';
+import { uploadMediaFile } from '../../config/cloudinary';
 
 export const getMedicalCases = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -705,7 +706,7 @@ export const uploadGeneralPatientReport = async (req: Request, res: Response): P
       medicalCaseId,
       investigationOrderId,
       testName,
-      fileUrl,
+      fileUrl: incomingFileUrl,
       fileType,
       hospitalClinicName,
       reportDate,
@@ -713,9 +714,26 @@ export const uploadGeneralPatientReport = async (req: Request, res: Response): P
       aiSummary,
     } = req.body;
 
-    if (!testName || !fileUrl) {
+    if (!testName || !incomingFileUrl) {
       res.status(400).json({ success: false, message: 'Test name and report file URL or image are required.' });
       return;
+    }
+
+    let finalFileUrl = incomingFileUrl;
+
+    // If incoming data is base64 data URI, upload to Cloudinary or local storage
+    if (typeof incomingFileUrl === 'string' && incomingFileUrl.startsWith('data:')) {
+      try {
+        const uploadRes = await uploadMediaFile(incomingFileUrl, {
+          folder: 'patient_reports',
+          filenamePrefix: 'rep',
+          mimeType: fileType || 'image/jpeg',
+        });
+        finalFileUrl = uploadRes.url;
+      } catch (uploadErr) {
+        // Fallback to storing raw data if upload pipeline has warning
+        console.warn('Media upload fallback engaged:', uploadErr);
+      }
     }
 
     const report = await prisma.patientReport.create({
@@ -725,7 +743,7 @@ export const uploadGeneralPatientReport = async (req: Request, res: Response): P
         patientPhone: patientPhone || null,
         patientName: patientName || null,
         testName,
-        fileUrl,
+        fileUrl: finalFileUrl,
         fileType: fileType || 'image/jpeg',
         hospitalClinicName: hospitalClinicName || 'Diagnostic Lab',
         reportDate: reportDate ? new Date(reportDate) : new Date(),
@@ -750,6 +768,89 @@ export const uploadGeneralPatientReport = async (req: Request, res: Response): P
     res.status(201).json({
       success: true,
       message: 'Medical report uploaded and indexed successfully.',
+      report,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Device file upload via multipart/form-data
+export const uploadReportFromFile = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const file = req.file;
+    const {
+      patientPhone,
+      patientName,
+      medicalCaseId,
+      investigationOrderId,
+      testName,
+      hospitalClinicName,
+      reportDate,
+      notes,
+    } = req.body;
+
+    if (!testName) {
+      res.status(400).json({ success: false, message: 'Test name is required.' });
+      return;
+    }
+
+    let fileUrl = '';
+    let fileType = 'application/octet-stream';
+
+    if (file) {
+      fileType = file.mimetype;
+      const uploaded = await uploadMediaFile(file.buffer, {
+        folder: 'patient_reports',
+        filenamePrefix: 'rep',
+        mimeType: file.mimetype,
+      });
+      fileUrl = uploaded.url;
+    } else if (req.body.fileUrl) {
+      fileUrl = req.body.fileUrl;
+      if (fileUrl.startsWith('data:')) {
+        const uploaded = await uploadMediaFile(fileUrl, {
+          folder: 'patient_reports',
+          filenamePrefix: 'rep',
+        });
+        fileUrl = uploaded.url;
+      }
+    } else {
+      res.status(400).json({ success: false, message: 'Please select a file to upload from your device.' });
+      return;
+    }
+
+    const report = await prisma.patientReport.create({
+      data: {
+        medicalCaseId: medicalCaseId || null,
+        investigationOrderId: investigationOrderId || null,
+        patientPhone: patientPhone || null,
+        patientName: patientName || null,
+        testName,
+        fileUrl,
+        fileType,
+        hospitalClinicName: hospitalClinicName || 'Diagnostic Lab',
+        reportDate: reportDate ? new Date(reportDate) : new Date(),
+        notes: notes || null,
+        doctorId: req.user?.role === 'DOCTOR' ? req.user.id : null,
+      },
+    });
+
+    if (medicalCaseId) {
+      await prisma.medicalCaseTimeline.create({
+        data: {
+          medicalCaseId,
+          eventType: 'REPORT_UPLOADED',
+          title: 'Investigation Report Uploaded',
+          description: `${testName} report uploaded (${hospitalClinicName || 'Diagnostic Lab'}).`,
+          metadata: { reportId: report.id },
+        },
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Report uploaded successfully from device.',
       report,
     });
   } catch (error: any) {

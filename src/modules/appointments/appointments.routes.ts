@@ -5,12 +5,16 @@ import {
   getDoctorAppointments,
   getPatientAppointments,
   updateAppointmentStatus,
+  getChamberSlots,
 } from './appointments.controller';
 import { authenticate, optionalAuthenticate } from '../../middlewares/auth.middleware';
 import { requireRoles } from '../../middlewares/role.middleware';
 import { Role } from '@prisma/client';
 
 const router = Router();
+
+// Get available slots with capacity for a specific chamber and date
+router.get('/chamber/:chamberId/slots', optionalAuthenticate, getChamberSlots);
 
 // Guest or logged-in booking
 router.post('/book', optionalAuthenticate, bookAppointment);
