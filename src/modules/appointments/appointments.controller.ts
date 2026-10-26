@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import prisma from '../../config/database';
 import { AppointmentStatus, CaseStatus } from '@prisma/client';
+import { normalizeBdPhone } from '../../utils/phoneUtils';
 
 export const bookAppointment = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -27,6 +28,10 @@ export const bookAppointment = async (req: Request, res: Response): Promise<void
       return;
     }
 
+    // Normalize Bangladeshi phone
+    const phoneCheck = normalizeBdPhone(patientPhone);
+    const normalizedPhone = phoneCheck.isValid ? phoneCheck.normalized : patientPhone.trim();
+
     // Guest booking requires verified mobile number
     if (isGuestBooking && !otpVerified) {
       res.status(400).json({
@@ -34,6 +39,20 @@ export const bookAppointment = async (req: Request, res: Response): Promise<void
         message: 'Guest booking requires mobile number OTP verification.',
       });
       return;
+    }
+
+    // Try finding existing user by phone if req.user is null
+    let linkedUserId = req.user?.id || null;
+    if (!linkedUserId && phoneCheck.isValid) {
+      const matchUser = await prisma.user.findFirst({
+        where: {
+          OR: [{ phone: phoneCheck.normalized }, { phone: phoneCheck.national }],
+        },
+        select: { id: true },
+      });
+      if (matchUser) {
+        linkedUserId = matchUser.id;
+      }
     }
 
     const apptDate = new Date(appointmentDate);
@@ -116,11 +135,11 @@ export const bookAppointment = async (req: Request, res: Response): Promise<void
         appointmentNumber,
         doctorId,
         chamberId,
-        patientUserId: req.user?.id || null,
+        patientUserId: linkedUserId,
         familyMemberId: familyMemberId || null,
         petProfileId: petProfileId || null,
         patientName,
-        patientPhone,
+        patientPhone: normalizedPhone,
         patientEmail: patientEmail || null,
         appointmentDate: apptDate,
         timeSlot: timeSlot || `Serial #${serialNumber}`,
@@ -398,14 +417,17 @@ export const bookAppointmentByDoctor = async (req: Request, res: Response): Prom
     const dayStart = new Date(apptDate.getFullYear(), apptDate.getMonth(), apptDate.getDate(), 0, 0, 0);
     const dayEnd = new Date(apptDate.getFullYear(), apptDate.getMonth(), apptDate.getDate(), 23, 59, 59);
 
-    // Look for existing registered user by phone
-    const cleanPhone = patientPhone.replace(/\s+/g, '');
+    // Look for existing registered user by phone with strict BD normalization
+    const phoneCheck = normalizeBdPhone(patientPhone);
+    const normalizedDocPatientPhone = phoneCheck.isValid ? phoneCheck.normalized : patientPhone.trim();
+    const nationalDocPatientPhone = phoneCheck.isValid ? phoneCheck.national : patientPhone.trim();
+
     let existingUser = await prisma.user.findFirst({
       where: {
         OR: [
-          { phone: cleanPhone },
-          { phone: cleanPhone.replace('+88', '') },
-          { phone: `+88${cleanPhone.replace('+88', '')}` },
+          { phone: normalizedDocPatientPhone },
+          { phone: nationalDocPatientPhone },
+          { phone: patientPhone.trim() },
         ],
       },
     });
@@ -430,7 +452,7 @@ export const bookAppointmentByDoctor = async (req: Request, res: Response): Prom
         chamberId,
         patientUserId: existingUser?.id || null,
         patientName,
-        patientPhone: cleanPhone,
+        patientPhone: normalizedDocPatientPhone,
         patientEmail: patientEmail || null,
         appointmentDate: apptDate,
         timeSlot: timeSlot || `Serial #${serialNumber}`,

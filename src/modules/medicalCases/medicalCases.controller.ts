@@ -672,6 +672,12 @@ export const getPatientHistoryByPhone = async (req: Request, res: Response): Pro
       knownAllergies: activeAllergies,
       chronicConditions: chronicDiseases,
       bloodGroup: patientUser?.patientProfile?.bloodGroup || 'Not Recorded',
+      emergencyContact: patientUser?.patientProfile?.emergencyContact || null,
+      address: patientUser?.patientProfile?.address || null,
+      gender: patientUser?.patientProfile?.gender || null,
+      dateOfBirth: patientUser?.patientProfile?.dateOfBirth || null,
+      familyMembers: patientUser?.patientProfile?.familyMembers || [],
+      pets: patientUser?.patientProfile?.pets || [],
       pastDiagnoses: uniqueDiagnoses,
       frequentlyPrescribedMedicines: Array.from(pastMedicinesMap.values()).sort((a, b) => b.timesPrescribed - a.timesPrescribed).slice(0, 8),
       clinicalAlerts: [

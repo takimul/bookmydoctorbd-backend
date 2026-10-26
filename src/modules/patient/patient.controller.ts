@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../../config/database';
+import { normalizeBdPhone } from '../../utils/phoneUtils';
 
 // 1. Get complete patient health dashboard & timeline
 export const getPatientDashboard = async (req: Request, res: Response): Promise<void> => {
@@ -279,4 +280,106 @@ export const toggleDoctorFavorite = async (req: Request, res: Response): Promise
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// 6. Update Patient Health Profile (Emergency contacts, blood group, allergies, chronic conditions)
+export const updatePatientProfile = async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ success: false, message: 'Unauthorized' });
+      return;
+    }
+
+    const {
+      name,
+      dateOfBirth,
+      gender,
+      bloodGroup,
+      allergies,
+      chronicConditions,
+      emergencyContactName,
+      emergencyContactPhone,
+      emergencyContactRelation,
+      emergencyContact,
+      address,
+      consentHealthRecommendations,
+    } = req.body;
+
+    // Build structured emergency contact string
+    let formattedEmergencyContact = emergencyContact || '';
+    if (emergencyContactName || emergencyContactPhone) {
+      let contactPhoneFormatted = emergencyContactPhone;
+      if (emergencyContactPhone) {
+        const check = normalizeBdPhone(emergencyContactPhone);
+        if (check.isValid) contactPhoneFormatted = check.normalized;
+      }
+      formattedEmergencyContact = `${emergencyContactName || 'Emergency Contact'} (${emergencyContactRelation || 'Relation'}) - ${contactPhoneFormatted || 'N/A'}`;
+    }
+
+    // Update user's name if modified
+    if (name && name.trim()) {
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: { name: name.trim() },
+      });
+    }
+
+    // Format allergies and chronic conditions safely
+    let allergiesArr: string[] | undefined = undefined;
+    if (allergies !== undefined) {
+      allergiesArr = Array.isArray(allergies)
+        ? allergies.map((a: any) => String(a).trim()).filter(Boolean)
+        : typeof allergies === 'string'
+        ? allergies.split(',').map((a) => a.trim()).filter(Boolean)
+        : [];
+    }
+
+    let conditionsArr: string[] | undefined = undefined;
+    if (chronicConditions !== undefined) {
+      conditionsArr = Array.isArray(chronicConditions)
+        ? chronicConditions.map((c: any) => String(c).trim()).filter(Boolean)
+        : typeof chronicConditions === 'string'
+        ? chronicConditions.split(',').map((c) => c.trim()).filter(Boolean)
+        : [];
+    }
+
+    const profile = await prisma.patientProfile.upsert({
+      where: { userId: req.user.id },
+      create: {
+        userId: req.user.id,
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+        gender: gender || null,
+        bloodGroup: bloodGroup || null,
+        allergies: allergiesArr || [],
+        chronicConditions: conditionsArr || [],
+        emergencyContact: formattedEmergencyContact || null,
+        address: address || null,
+        consentHealthRecommendations: consentHealthRecommendations !== undefined ? Boolean(consentHealthRecommendations) : true,
+      },
+      update: {
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+        gender: gender !== undefined ? gender : undefined,
+        bloodGroup: bloodGroup !== undefined ? bloodGroup : undefined,
+        allergies: allergiesArr !== undefined ? allergiesArr : undefined,
+        chronicConditions: conditionsArr !== undefined ? conditionsArr : undefined,
+        emergencyContact: formattedEmergencyContact ? formattedEmergencyContact : undefined,
+        address: address !== undefined ? address : undefined,
+        consentHealthRecommendations: consentHealthRecommendations !== undefined ? Boolean(consentHealthRecommendations) : undefined,
+      },
+      include: {
+        user: { select: { id: true, name: true, phone: true, email: true } },
+        familyMembers: true,
+        pets: true,
+      },
+    });
+
+    res.json({
+      success: true,
+      message: 'Health profile updated successfully.',
+      profile,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to update profile.' });
+  }
+};
+
 

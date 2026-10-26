@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { Role, DoctorVerificationStatus } from '@prisma/client';
 import prisma from '../../config/database';
 import { ENV } from '../../config/env';
+import { normalizeBdPhone } from '../../utils/phoneUtils';
 
 // Temporary in-memory OTP cache for guest verification (can also be backed by Redis in production)
 const otpStore = new Map<string, { otp: string; expiresAt: number; name?: string }>();
@@ -37,32 +38,138 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     const { name, email, phone, password, role = 'PATIENT', doctorDetails } = req.body;
 
     if (!name || !phone || !password) {
-      res.status(400).json({ success: false, message: 'Name, phone number, and password are required.' });
+      res.status(400).json({ success: false, message: 'Name, mobile number, and password are required.' });
       return;
     }
+
+    // Strict Bangladeshi Phone Validation & Canonical Normalization (+8801XXXXXXXXX)
+    const phoneCheck = normalizeBdPhone(phone);
+    if (!phoneCheck.isValid) {
+      res.status(400).json({ success: false, message: phoneCheck.error });
+      return;
+    }
+
+    const normalizedPhone = phoneCheck.normalized;
+    const nationalPhone = phoneCheck.national;
 
     const existingUser = await prisma.user.findFirst({
       where: {
-        OR: [{ phone }, ...(email ? [{ email }] : [])],
+        OR: [
+          { phone: normalizedPhone },
+          { phone: nationalPhone },
+          ...(email ? [{ email }] : []),
+        ],
+      },
+      include: {
+        patientProfile: true,
+        doctorProfile: true,
       },
     });
-
-    if (existingUser) {
-      res.status(409).json({ success: false, message: 'User with this phone number or email already exists.' });
-      return;
-    }
 
     const passwordHash = await bcrypt.hash(password, 10);
     const assignedRole = role === 'DOCTOR' ? Role.DOCTOR : Role.PATIENT;
 
+    // SCENARIO 1: Existing Guest or Placeholder User (booked appointment without full account) -> AUTO MERGE!
+    if (existingUser) {
+      const isGuestOrPlaceholder = existingUser.role === Role.GUEST || !existingUser.passwordHash;
+
+      if (isGuestOrPlaceholder) {
+        // Upgrade account to registered PATIENT/DOCTOR and attach password
+        const updatedUser = await prisma.user.update({
+          where: { id: existingUser.id },
+          data: {
+            name: name || existingUser.name,
+            email: email || existingUser.email,
+            phone: normalizedPhone,
+            passwordHash,
+            role: assignedRole,
+            isPhoneVerified: true,
+            isActive: true,
+          },
+          include: {
+            doctorProfile: true,
+            patientProfile: true,
+          },
+        });
+
+        // Ensure patient profile exists
+        let patientProfile = updatedUser.patientProfile;
+        if (assignedRole === Role.PATIENT && !patientProfile) {
+          patientProfile = await prisma.patientProfile.create({
+            data: {
+              userId: updatedUser.id,
+              consentHealthRecommendations: true,
+            },
+          });
+        }
+
+        // Link all prior appointments booked under this mobile number
+        await prisma.appointment.updateMany({
+          where: {
+            OR: [
+              { patientPhone: normalizedPhone },
+              { patientPhone: nationalPhone },
+              { patientPhone: phone.trim() },
+            ],
+            patientUserId: null,
+          },
+          data: {
+            patientUserId: updatedUser.id,
+          },
+        });
+
+        // Link all prior medical cases under this mobile number
+        await prisma.medicalCase.updateMany({
+          where: {
+            OR: [
+              { appointment: { patientPhone: normalizedPhone } },
+              { appointment: { patientPhone: nationalPhone } },
+            ],
+            patientUserId: null,
+          },
+          data: {
+            patientUserId: updatedUser.id,
+          },
+        });
+
+        const token = generateToken(updatedUser);
+
+        res.status(200).json({
+          success: true,
+          message: 'Account successfully registered and merged with your previous appointment and medical history.',
+          token,
+          user: {
+            id: updatedUser.id,
+            name: updatedUser.name,
+            email: updatedUser.email,
+            phone: updatedUser.phone,
+            role: updatedUser.role,
+            isPhoneVerified: updatedUser.isPhoneVerified,
+            doctorProfile: updatedUser.doctorProfile,
+            patientProfile,
+          },
+          merged: true,
+        });
+        return;
+      }
+
+      // Existing user already has a password and is not a guest -> conflict
+      res.status(409).json({
+        success: false,
+        message: 'An account with this mobile number or email is already registered. Please sign in.',
+      });
+      return;
+    }
+
+    // SCENARIO 2: Brand New User
     const user = await prisma.user.create({
       data: {
         name,
         email: email || null,
-        phone,
+        phone: normalizedPhone,
         passwordHash,
         role: assignedRole,
-        isPhoneVerified: true, // In production could require OTP
+        isPhoneVerified: true,
         ...(assignedRole === Role.PATIENT
           ? {
               patientProfile: {
@@ -93,6 +200,34 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       include: {
         doctorProfile: true,
         patientProfile: true,
+      },
+    });
+
+    // Auto-link any past appointments or cases booked with this phone before account creation
+    await prisma.appointment.updateMany({
+      where: {
+        OR: [
+          { patientPhone: normalizedPhone },
+          { patientPhone: nationalPhone },
+          { patientPhone: phone.trim() },
+        ],
+        patientUserId: null,
+      },
+      data: {
+        patientUserId: user.id,
+      },
+    });
+
+    await prisma.medicalCase.updateMany({
+      where: {
+        OR: [
+          { appointment: { patientPhone: normalizedPhone } },
+          { appointment: { patientPhone: nationalPhone } },
+        ],
+        patientUserId: null,
+      },
+      data: {
+        patientUserId: user.id,
       },
     });
 
@@ -130,9 +265,23 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    // Check if identifier is phone number (with or without +88)
+    const phoneCheck = normalizeBdPhone(identifier);
+    const searchConditions: any[] = [{ email: identifier }];
+
+    if (phoneCheck.isValid) {
+      searchConditions.push(
+        { phone: phoneCheck.normalized },
+        { phone: phoneCheck.national },
+        { phone: identifier }
+      );
+    } else {
+      searchConditions.push({ phone: identifier });
+    }
+
     const user = await prisma.user.findFirst({
       where: {
-        OR: [{ email: identifier }, { phone: identifier }],
+        OR: searchConditions,
       },
       include: {
         doctorProfile: {
@@ -191,22 +340,33 @@ export const requestGuestOtp = async (req: Request, res: Response): Promise<void
     const { phone, name } = req.body;
 
     if (!phone) {
-      res.status(400).json({ success: false, message: 'Phone number is required.' });
+      res.status(400).json({ success: false, message: 'Bangladeshi mobile number is required.' });
       return;
     }
+
+    // Validate and normalize to +8801XXXXXXXXX
+    const phoneCheck = normalizeBdPhone(phone);
+    if (!phoneCheck.isValid) {
+      res.status(400).json({ success: false, message: phoneCheck.error });
+      return;
+    }
+
+    const normalizedPhone = phoneCheck.normalized;
 
     // 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-    otpStore.set(phone, { otp, expiresAt, name });
+    otpStore.set(normalizedPhone, { otp, expiresAt, name });
+    otpStore.set(phoneCheck.national, { otp, expiresAt, name }); // Also support national format lookup
 
     // In a live Bangladeshi SMS gateway (e.g. SSL Wireless / Greenweb / Teletalk), an SMS is sent here.
-    console.log(`[BookMyDoctorBD SMS Gateway] Sent OTP to ${phone}: ${otp}`);
+    console.log(`[BookMyDoctorBD SMS Gateway] Sent OTP to ${normalizedPhone}: ${otp}`);
 
     res.json({
       success: true,
-      message: `OTP sent successfully to ${phone}. (For development/demo, OTP is: ${otp})`,
+      message: `OTP sent successfully to ${normalizedPhone}. (For development/demo, OTP is: ${otp})`,
+      normalizedPhone,
       devOtp: otp, // Surfaced for instant testing
     });
   } catch (error: any) {
@@ -224,7 +384,11 @@ export const verifyGuestOtp = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const record = otpStore.get(phone);
+    const phoneCheck = normalizeBdPhone(phone);
+    const normalizedPhone = phoneCheck.isValid ? phoneCheck.normalized : phone;
+    const nationalPhone = phoneCheck.isValid ? phoneCheck.national : phone;
+
+    const record = otpStore.get(normalizedPhone) || otpStore.get(nationalPhone) || otpStore.get(phone);
     // Allow master test OTP '123456' or generated OTP
     const isValid = (record && record.otp === otp && record.expiresAt > Date.now()) || otp === '123456';
 
@@ -234,15 +398,17 @@ export const verifyGuestOtp = async (req: Request, res: Response): Promise<void>
     }
 
     // Find or create guest user
-    let user = await prisma.user.findUnique({
-      where: { phone },
+    let user = await prisma.user.findFirst({
+      where: {
+        OR: [{ phone: normalizedPhone }, { phone: nationalPhone }, { phone }],
+      },
       include: { patientProfile: true, doctorProfile: true },
     });
 
     if (!user) {
       user = await prisma.user.create({
         data: {
-          phone,
+          phone: normalizedPhone,
           name: name || record?.name || 'Guest Patient',
           role: Role.GUEST,
           isPhoneVerified: true,
@@ -257,12 +423,13 @@ export const verifyGuestOtp = async (req: Request, res: Response): Promise<void>
     } else {
       user = await prisma.user.update({
         where: { id: user.id },
-        data: { isPhoneVerified: true },
+        data: { isPhoneVerified: true, phone: normalizedPhone },
         include: { patientProfile: true, doctorProfile: true },
       });
     }
 
-    otpStore.delete(phone);
+    otpStore.delete(normalizedPhone);
+    otpStore.delete(nationalPhone);
 
     const token = generateToken({ ...user, isGuest: true });
 

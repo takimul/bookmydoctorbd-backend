@@ -7,7 +7,9 @@ const router = Router();
 router.post('/register', register);
 router.post('/login', login);
 router.post('/guest-otp/request', requestGuestOtp);
+router.post('/guest-otp', requestGuestOtp);
 router.post('/guest-otp/verify', verifyGuestOtp);
+router.post('/verify-guest-otp', verifyGuestOtp);
 router.get('/me', authenticate, getMe);
 
 export default router;

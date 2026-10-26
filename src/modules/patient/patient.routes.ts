@@ -5,6 +5,7 @@ import {
   upsertPetProfile,
   addPetVaccination,
   toggleDoctorFavorite,
+  updatePatientProfile,
 } from './patient.controller';
 import { authenticate } from '../../middlewares/auth.middleware';
 
@@ -13,6 +14,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/dashboard', getPatientDashboard);
+router.patch('/profile', updatePatientProfile);
 router.post('/family-members', upsertFamilyMember);
 router.post('/pets', upsertPetProfile);
 router.post('/pets/vaccinations', addPetVaccination);
