@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import { Role, DoctorVerificationStatus, SubscriptionStatus } from '@prisma/client';
+import { Role, DoctorVerificationStatus, SubscriptionStatus, AppointmentStatus } from '@prisma/client';
 import prisma from '../../config/database';
 
 // Super Admin manually creates doctor ID & password from dashboard
@@ -334,3 +334,342 @@ export const getAdminAnalytics = async (_req: Request, res: Response): Promise<v
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// ============================================================================
+// SUPER ADMIN SUPERCHARGED EXTENSIONS
+// ============================================================================
+
+// 1. Super Admin: List all platform users with rich filtering
+export const getAllUsersAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { role, search, status, limit = 50, page = 1 } = req.query;
+
+    const where: any = {};
+    if (role && Object.values(Role).includes(role as Role)) {
+      where.role = role as Role;
+    }
+
+    if (status !== undefined && status !== '') {
+      where.isActive = status === 'true';
+    }
+
+    if (search) {
+      const searchStr = (search as string).trim();
+      where.OR = [
+        { name: { contains: searchStr, mode: 'insensitive' } },
+        { phone: { contains: searchStr, mode: 'insensitive' } },
+        { email: { contains: searchStr, mode: 'insensitive' } },
+      ];
+    }
+
+    const take = Math.min(parseInt(limit as any, 10) || 50, 100);
+    const skip = (Math.max(parseInt(page as any, 10) || 1, 1) - 1) * take;
+
+    const [total, users] = await Promise.all([
+      prisma.user.count({ where }),
+      prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          role: true,
+          isActive: true,
+          isPhoneVerified: true,
+          createdAt: true,
+          updatedAt: true,
+          doctorProfile: {
+            select: {
+              id: true,
+              bmdcRegNumber: true,
+              verificationStatus: true,
+              specialties: true,
+            },
+          },
+          patientProfile: {
+            select: {
+              id: true,
+              bloodGroup: true,
+              gender: true,
+            },
+          },
+          _count: {
+            select: {
+              appointmentsAsPatient: true,
+              medicalCases: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      total,
+      page: Math.max(parseInt(page as any, 10) || 1, 1),
+      totalPages: Math.ceil(total / take),
+      users,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// 2. Super Admin: Toggle User Active Status (Freeze / Unfreeze account)
+export const toggleUserStatusAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string;
+    const { isActive } = req.body;
+
+    if (isActive === undefined) {
+      res.status(400).json({ success: false, message: 'isActive boolean flag is required.' });
+      return;
+    }
+
+    if (req.user?.id === id) {
+      res.status(400).json({ success: false, message: 'You cannot deactivate your own Super Admin account.' });
+      return;
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id },
+      data: { isActive: Boolean(isActive) },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        isActive: true,
+      },
+    });
+
+    res.json({
+      success: true,
+      message: `Account for ${updatedUser.name} has been ${updatedUser.isActive ? 'activated' : 'suspended/deactivated'}.`,
+      user: updatedUser,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// 3. Super Admin: Change User Role (e.g. Promote to Admin or Doctor)
+export const changeUserRoleAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string;
+    const { role } = req.body;
+
+    if (!role || !Object.values(Role).includes(role)) {
+      res.status(400).json({
+        success: false,
+        message: `Invalid role. Allowed roles: ${Object.values(Role).join(', ')}.`,
+      });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id },
+      include: { doctorProfile: true, patientProfile: true },
+    });
+
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found.' });
+      return;
+    }
+
+    // If upgrading to DOCTOR and no doctor profile exists, create minimal shell
+    if (role === Role.DOCTOR && !user.doctorProfile) {
+      await prisma.doctorProfile.create({
+        data: {
+          userId: user.id,
+          bmdcRegNumber: `BMDC-TMP-${Math.floor(10000 + Math.random() * 90000)}`,
+          specialties: ['General Medicine'],
+          degrees: ['MBBS'],
+          verificationStatus: DoctorVerificationStatus.VERIFIED,
+          verifiedAt: new Date(),
+        },
+      });
+    }
+
+    // If upgrading to PATIENT and no patient profile exists, create shell
+    if (role === Role.PATIENT && !user.patientProfile) {
+      await prisma.patientProfile.create({
+        data: { userId: user.id },
+      });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id },
+      data: { role },
+      select: { id: true, name: true, phone: true, email: true, role: true },
+    });
+
+    res.json({
+      success: true,
+      message: `User ${updated.name} role changed to ${updated.role}.`,
+      user: updated,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// 4. Super Admin: Manually Reset Any User Password
+export const resetUserPasswordAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string;
+    const { newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 6) {
+      res.status(400).json({
+        success: false,
+        message: 'New password is required and must be at least 6 characters long.',
+      });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    const user = await prisma.user.update({
+      where: { id },
+      data: { passwordHash },
+      select: { id: true, name: true, phone: true, email: true, role: true },
+    });
+
+    res.json({
+      success: true,
+      message: `Password reset successfully for ${user.name} (${user.email || user.phone}).`,
+      user,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// 5. Super Admin: Inspect platform-wide appointments across all doctors/chambers
+export const getAllAppointmentsAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { status, search, doctorId, limit = 50, page = 1 } = req.query;
+
+    const where: any = {};
+    if (status && Object.values(AppointmentStatus).includes(status as any)) {
+      where.status = status as AppointmentStatus;
+    }
+
+    if (doctorId) {
+      where.doctorId = doctorId as string;
+    }
+
+    if (search) {
+      const searchStr = (search as string).trim();
+      where.OR = [
+        { patientName: { contains: searchStr, mode: 'insensitive' } },
+        { patientPhone: { contains: searchStr, mode: 'insensitive' } },
+        { appointmentNumber: { contains: searchStr, mode: 'insensitive' } },
+        { doctor: { user: { name: { contains: searchStr, mode: 'insensitive' } } } },
+      ];
+    }
+
+    const take = Math.min(parseInt(limit as any, 10) || 50, 100);
+    const skip = (Math.max(parseInt(page as any, 10) || 1, 1) - 1) * take;
+
+    const [total, appointments] = await Promise.all([
+      prisma.appointment.count({ where }),
+      prisma.appointment.findMany({
+        where,
+        include: {
+          doctor: {
+            include: {
+              user: { select: { name: true, phone: true, email: true } },
+            },
+          },
+          chamber: true,
+          patientUser: {
+            select: { name: true, phone: true, email: true },
+          },
+        },
+        orderBy: { appointmentDate: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      total,
+      page: Math.max(parseInt(page as any, 10) || 1, 1),
+      totalPages: Math.ceil(total / take),
+      appointments,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// 6. Super Admin: Force Update Appointment Status
+export const updateAppointmentStatusAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string;
+    const { status } = req.body;
+
+    if (!status || !Object.values(AppointmentStatus).includes(status)) {
+      res.status(400).json({
+        success: false,
+        message: `Invalid appointment status. Allowed: ${Object.values(AppointmentStatus).join(', ')}.`,
+      });
+      return;
+    }
+
+    const updated = await prisma.appointment.update({
+      where: { id },
+      data: { status },
+      include: {
+        chamber: true,
+        doctor: { include: { user: { select: { name: true } } } },
+      },
+    });
+
+    res.json({
+      success: true,
+      message: `Appointment ${updated.appointmentNumber} status updated to ${status}.`,
+      appointment: updated,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// 7. Super Admin: Delete / Archive Doctor Account
+export const deleteDoctorAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string; // doctorProfileId
+
+    const doctor = await prisma.doctorProfile.findUnique({
+      where: { id },
+      include: { user: true },
+    });
+
+    if (!doctor) {
+      res.status(404).json({ success: false, message: 'Doctor profile not found.' });
+      return;
+    }
+
+    // Cascade delete via User deletes DoctorProfile, chambers, subscriptions
+    await prisma.user.delete({
+      where: { id: doctor.userId },
+    });
+
+    res.json({
+      success: true,
+      message: `Doctor Dr. ${doctor.user.name} and associated profile have been permanently deleted.`,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+

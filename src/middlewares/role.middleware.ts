@@ -1,6 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { Role } from '@prisma/client';
 
+/**
+ * Role-based authorization middleware.
+ * SUPER_ADMIN has global authority across all administrative and operational endpoints.
+ */
 export const requireRoles = (...roles: Role[]) => {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {
@@ -8,14 +12,14 @@ export const requireRoles = (...roles: Role[]) => {
       return;
     }
 
-    if (!roles.includes(req.user.role)) {
-      res.status(403).json({
-        success: false,
-        message: `Forbidden. This action requires one of the following roles: ${roles.join(', ')}.`,
-      });
-      return;
+    // Super Admin has universal access across all role-protected endpoints
+    if (req.user.role === Role.SUPER_ADMIN || roles.includes(req.user.role)) {
+      return next();
     }
 
-    next();
+    res.status(403).json({
+      success: false,
+      message: `Forbidden. Your role (${req.user.role}) is not authorized for this resource. Required: ${roles.join(', ')}.`,
+    });
   };
 };

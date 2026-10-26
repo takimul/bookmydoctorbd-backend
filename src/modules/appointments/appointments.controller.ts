@@ -403,6 +403,7 @@ export const bookAppointmentByDoctor = async (req: Request, res: Response): Prom
       problemDescription,
       age,
       gender,
+      status: requestedStatus,
     } = req.body;
 
     if (!chamberId || !appointmentDate || !patientName || !patientPhone) {
@@ -445,6 +446,11 @@ export const bookAppointmentByDoctor = async (req: Request, res: Response): Prom
     const dateStr = apptDate.toISOString().slice(0, 10).replace(/-/g, '');
     const appointmentNumber = `BMD-${dateStr}-${Math.floor(100 + Math.random() * 900)}-#${serialNumber}`;
 
+    const appointmentStatus =
+      requestedStatus && Object.values(AppointmentStatus).includes(requestedStatus as any)
+        ? (requestedStatus as AppointmentStatus)
+        : AppointmentStatus.CONFIRMED;
+
     const appointment = await prisma.appointment.create({
       data: {
         appointmentNumber,
@@ -457,13 +463,18 @@ export const bookAppointmentByDoctor = async (req: Request, res: Response): Prom
         appointmentDate: apptDate,
         timeSlot: timeSlot || `Serial #${serialNumber}`,
         serialNumber,
-        status: AppointmentStatus.CONFIRMED,
+        status: appointmentStatus,
         problemDescription: problemDescription || (age && gender ? `Age: ${age}, Gender: ${gender}` : null),
         isGuestBooking: !existingUser,
         otpVerified: true,
       },
       include: {
         chamber: true,
+        patientUser: {
+          include: {
+            patientProfile: true,
+          },
+        },
       },
     });
 
