@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../../config/database';
+import { logAuditEvent } from '../../utils/auditLogger';
 import { AppointmentStatus, CaseStatus } from '@prisma/client';
 import { normalizeBdPhone } from '../../utils/phoneUtils';
 
@@ -228,7 +229,26 @@ export const getDoctorAppointments = async (req: Request, res: Response): Promis
         patientUser: { select: { id: true, name: true, phone: true, email: true } },
         familyMember: true,
         petProfile: true,
-        medicalCase: { select: { id: true, caseNumber: true, status: true } },
+        medicalCase: {
+          include: {
+            prescriptions: {
+              include: { items: true },
+              orderBy: { issuedAt: 'desc' },
+            },
+            investigationOrders: {
+              include: { reports: true },
+            },
+            patientReports: {
+              orderBy: { uploadedAt: 'desc' },
+            },
+            digitalFollowUps: {
+              orderBy: { createdAt: 'desc' },
+            },
+            timeline: {
+              orderBy: { createdAt: 'desc' },
+            },
+          },
+        },
       },
       orderBy: [{ appointmentDate: 'desc' }, { serialNumber: 'asc' }],
     });
@@ -258,11 +278,23 @@ export const getPatientAppointments = async (req: Request, res: Response): Promi
         },
         chamber: true,
         medicalCase: {
-          select: {
-            id: true,
-            caseNumber: true,
-            status: true,
-            prescriptions: { select: { id: true, issuedAt: true } },
+          include: {
+            prescriptions: {
+              include: { items: true },
+              orderBy: { issuedAt: 'desc' },
+            },
+            investigationOrders: {
+              include: { reports: true },
+            },
+            patientReports: {
+              orderBy: { uploadedAt: 'desc' },
+            },
+            digitalFollowUps: {
+              orderBy: { createdAt: 'desc' },
+            },
+            timeline: {
+              orderBy: { createdAt: 'desc' },
+            },
           },
         },
       },
@@ -618,6 +650,121 @@ export const getChamberSlots = async (req: Request, res: Response): Promise<void
       availableSlotsCount: slots.filter((s) => !s.isFull).length,
       slots,
     });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Upload Printed Report (Photo JPG/PNG or PDF) directly attached to Appointment ID
+export const uploadAppointmentReport = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const appointmentId = req.params.id as string;
+    const { testName, fileUrl, fileType, hospitalClinicName, notes, reportDate } = req.body;
+
+    if (!fileUrl || !testName) {
+      res.status(400).json({ success: false, message: 'Test name and file (photo or PDF) are required.' });
+      return;
+    }
+
+    const appointment = await prisma.appointment.findUnique({
+      where: { id: appointmentId },
+      include: { medicalCase: true, doctor: { include: { user: true } } },
+    });
+
+    if (!appointment) {
+      res.status(404).json({ success: false, message: 'Appointment record not found.' });
+      return;
+    }
+
+    // Ensure MedicalCase exists for this physical or digital consultation
+    let caseId = appointment.medicalCase?.id;
+    if (!caseId) {
+      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const newCase = await prisma.medicalCase.create({
+        data: {
+          caseNumber: `CASE-${dateStr}-${Math.floor(1000 + Math.random() * 9000)}`,
+          appointmentId: appointment.id,
+          doctorId: appointment.doctorId,
+          patientUserId: appointment.patientUserId,
+          title: `Clinical Consultation - ${appointment.patientName}`,
+          diagnosis: appointment.problemDescription || 'Consultation Record',
+        },
+      });
+      caseId = newCase.id;
+    }
+
+    const report = await prisma.patientReport.create({
+      data: {
+        medicalCaseId: caseId,
+        testName: testName.trim(),
+        fileUrl,
+        fileType: fileType || 'image/jpeg',
+        hospitalClinicName: hospitalClinicName ? hospitalClinicName.trim() : null,
+        patientPhone: appointment.patientPhone,
+        patientName: appointment.patientName,
+        doctorId: appointment.doctorId,
+        notes: notes ? notes.trim() : null,
+        reportDate: reportDate ? new Date(reportDate) : new Date(),
+      },
+    });
+
+    // Create a timeline event
+    await prisma.medicalCaseTimeline.create({
+      data: {
+        medicalCaseId: caseId,
+        eventType: 'REPORT_UPLOADED',
+        title: `Report Uploaded: ${testName}`,
+        description: `Printed report uploaded by ${req.user?.name || 'User'} (${req.user?.role || 'PATIENT'}) from ${hospitalClinicName || 'Diagnostic Center'}.`,
+      },
+    });
+
+    // Record audit event
+    await logAuditEvent({
+      actorUserId: req.user?.id,
+      actorName: req.user?.name,
+      actorRole: req.user?.role,
+      action: 'REPORT_UPLOADED',
+      targetType: 'APPOINTMENT',
+      targetId: appointment.id,
+      details: `Report "${testName}" linked to appointment ${appointment.appointmentNumber}.`,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Printed report successfully attached to appointment and medical case.',
+      report,
+      medicalCaseId: caseId,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get all uploaded reports for an appointment ID
+export const getAppointmentReports = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const appointmentId = req.params.id as string;
+
+    const appointment = await prisma.appointment.findUnique({
+      where: { id: appointmentId },
+      include: {
+        medicalCase: {
+          include: {
+            patientReports: {
+              orderBy: { uploadedAt: 'desc' },
+            },
+          },
+        },
+      },
+    });
+
+    if (!appointment) {
+      res.status(404).json({ success: false, message: 'Appointment not found.' });
+      return;
+    }
+
+    const reports = appointment.medicalCase?.patientReports || [];
+    res.json({ success: true, count: reports.length, reports });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }

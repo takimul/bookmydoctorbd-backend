@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { Role, DoctorVerificationStatus, SubscriptionStatus, AppointmentStatus } from '@prisma/client';
 import prisma from '../../config/database';
+import { logAuditEvent } from '../../utils/auditLogger';
 
 // Super Admin manually creates doctor ID & password from dashboard
 export const createDoctorManually = async (req: Request, res: Response): Promise<void> => {
@@ -72,6 +73,7 @@ export const createDoctorManually = async (req: Request, res: Response): Promise
         email: email || null,
         phone,
         passwordHash,
+        tempPassword: password,
         role: Role.DOCTOR,
         isPhoneVerified: true,
         doctorProfile: {
@@ -537,7 +539,7 @@ export const resetUserPasswordAdmin = async (req: Request, res: Response): Promi
 
     const user = await prisma.user.update({
       where: { id },
-      data: { passwordHash },
+      data: { passwordHash, tempPassword: newPassword },
       select: { id: true, name: true, phone: true, email: true, role: true },
     });
 
@@ -673,3 +675,49 @@ export const deleteDoctorAdmin = async (req: Request, res: Response): Promise<vo
   }
 };
 
+
+// 8. Super Admin: List Audit Logs with filtering and pagination
+export const getAuditLogsAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { action, targetType, search, limit = 50, page = 1 } = req.query;
+
+    const where: any = {};
+    if (action) {
+      where.action = action as string;
+    }
+    if (targetType) {
+      where.targetType = targetType as string;
+    }
+    if (search) {
+      const searchStr = (search as string).trim();
+      where.OR = [
+        { actorName: { contains: searchStr, mode: 'insensitive' } },
+        { details: { contains: searchStr, mode: 'insensitive' } },
+        { action: { contains: searchStr, mode: 'insensitive' } },
+      ];
+    }
+
+    const take = Math.min(parseInt(limit as any, 10) || 50, 100);
+    const skip = (Math.max(parseInt(page as any, 10) || 1, 1) - 1) * take;
+
+    const [total, logs] = await Promise.all([
+      prisma.auditLog.count({ where }),
+      prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      total,
+      page: Math.max(parseInt(page as any, 10) || 1, 1),
+      totalPages: Math.ceil(total / take),
+      logs,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

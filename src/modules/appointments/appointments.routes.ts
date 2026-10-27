@@ -6,6 +6,8 @@ import {
   getPatientAppointments,
   updateAppointmentStatus,
   getChamberSlots,
+  uploadAppointmentReport,
+  getAppointmentReports,
 } from './appointments.controller';
 import { authenticate, optionalAuthenticate } from '../../middlewares/auth.middleware';
 import { requireRoles } from '../../middlewares/role.middleware';
@@ -22,7 +24,7 @@ router.post('/book', optionalAuthenticate, bookAppointment);
 // Doctor booking for walk-in/chamber patient
 router.post('/doctor-book', authenticate, requireRoles(Role.DOCTOR), bookAppointmentByDoctor);
 
-// Doctor-only appointments list
+// Doctor-only appointments list (with full clinical history, prescriptions, reports & follow-ups)
 router.get('/doctor', authenticate, requireRoles(Role.DOCTOR), getDoctorAppointments);
 
 // Patient-only appointments list
@@ -30,5 +32,9 @@ router.get('/patient', authenticate, requireRoles(Role.PATIENT, Role.GUEST), get
 
 // Update status (Doctor, Admin, or Super Admin)
 router.patch('/:id/status', authenticate, requireRoles(Role.DOCTOR, Role.ADMIN, Role.SUPER_ADMIN), updateAppointmentStatus);
+
+// Report Uploading for both Doctor and Patient attached to Appointment ID
+router.post('/:id/reports', authenticate, uploadAppointmentReport);
+router.get('/:id/reports', authenticate, getAppointmentReports);
 
 export default router;

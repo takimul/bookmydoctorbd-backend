@@ -12,6 +12,7 @@ import {
   getAllAppointmentsAdmin,
   updateAppointmentStatusAdmin,
   deleteDoctorAdmin,
+  getAuditLogsAdmin,
 } from './admin.controller';
 import { authenticate } from '../../middlewares/auth.middleware';
 import { requireRoles } from '../../middlewares/role.middleware';
@@ -41,5 +42,8 @@ router.post('/users/:id/reset-password', resetUserPasswordAdmin);
 // Platform appointments oversight
 router.get('/appointments', getAllAppointmentsAdmin);
 router.patch('/appointments/:id/status', updateAppointmentStatusAdmin);
+
+// Audit Logging
+router.get('/audit-logs', getAuditLogsAdmin);
 
 export default router;
